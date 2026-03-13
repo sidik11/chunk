@@ -20,206 +20,185 @@ let progress = {}
 let history = []
 
 // load MEGA folder
-function loadFolder(){
-
-const folder = Mega.File.fromURL(folderURL)
-
-folder.loadAttributes(err => {
-
-if(err){
-console.log("MEGA error:",err)
-return
-}
-
-const files = folder.children || []
-
-videos = files
-.filter(f => f && f.name && f.size && /\.(mp4|mkv|webm|mov)$/i.test(f.name))
-.map((f,i)=>({
-id:i,
-name:f.name,
-size:f.size,
-file:f
-}))
-
-ready = true
-
-console.log("Loaded",videos.length,"videos")
-
-})
-
+function loadFolder() {
+  console.log("Loading MEGA folder...")
+  
+  const folder = Mega.File.fromURL(folderURL)
+  
+  folder.loadAttributes(err => {
+    if (err) {
+      console.log("MEGA error:", err)
+      return
+    }
+    
+    const files = folder.children || []
+    
+    videos = files
+      .filter(f => f && f.name && f.size && /\.(mp4|mkv|webm|mov)$/i.test(f.name))
+      .map((f, i) => ({
+        id: i,
+        name: f.name,
+        size: f.size,
+        file: f
+      }))
+    
+    ready = true
+    console.log("Loaded", videos.length, "videos")
+    console.log("First video:", videos[0]?.name)
+  })
 }
 
 loadFolder()
 
 // refresh list every 60s
-setInterval(loadFolder,60000)
+setInterval(loadFolder, 60000)
 
-
-
-// server status
-app.get("/",(req,res)=>{
-res.send("Mega streaming server running")
+// Simple status endpoint
+app.get("/", (req, res) => {
+  res.json({ 
+    status: ready ? "ready" : "loading", 
+    videos: videos.length,
+    message: "Mega streaming server running"
+  })
 })
-
-
 
 // video list
-app.get("/list",(req,res)=>{
-
-if(!ready) return res.json([])
-
-res.json(videos.map(v=>({
-id:v.id,
-name:v.name,
-size:v.size,
-views:views[v.id] || 0
-})))
-
+app.get("/list", (req, res) => {
+  if (!ready) return res.json([])
+  
+  res.json(videos.map(v => ({
+    id: v.id,
+    name: v.name,
+    size: v.size,
+    views: views[v.id] || 0
+  })))
 })
-
-
 
 // search videos
-app.get("/search",(req,res)=>{
-
-const q = (req.query.q || "").toLowerCase()
-
-const results = videos.filter(v =>
-v.name.toLowerCase().includes(q)
-)
-
-res.json(results.map(v=>({
-id:v.id,
-name:v.name,
-size:v.size
-})))
-
+app.get("/search", (req, res) => {
+  const q = (req.query.q || "").toLowerCase()
+  
+  const results = videos.filter(v =>
+    v.name.toLowerCase().includes(q)
+  )
+  
+  res.json(results.map(v => ({
+    id: v.id,
+    name: v.name,
+    size: v.size
+  })))
 })
-
-
 
 // recent videos
-app.get("/recent",(req,res)=>{
-
-const recent = [...videos].slice(-10).reverse()
-
-res.json(recent.map(v=>({
-id:v.id,
-name:v.name
-})))
-
+app.get("/recent", (req, res) => {
+  const recent = [...videos].slice(-10).reverse()
+  
+  res.json(recent.map(v => ({
+    id: v.id,
+    name: v.name
+  })))
 })
-
-
 
 // popular videos
-app.get("/popular",(req,res)=>{
-
-const sorted = [...videos].sort((a,b)=>
-(views[b.id]||0) - (views[a.id]||0)
-)
-
-res.json(sorted.slice(0,10).map(v=>({
-id:v.id,
-name:v.name,
-views:views[v.id] || 0
-})))
-
+app.get("/popular", (req, res) => {
+  const sorted = [...videos].sort((a, b) =>
+    (views[b.id] || 0) - (views[a.id] || 0)
+  )
+  
+  res.json(sorted.slice(0, 10).map(v => ({
+    id: v.id,
+    name: v.name,
+    views: views[v.id] || 0
+  })))
 })
-
-
 
 // watch history
-app.get("/history",(req,res)=>{
-res.json(history.slice(-20).reverse())
+app.get("/history", (req, res) => {
+  res.json(history.slice(-20).reverse())
 })
-
-
 
 // save playback progress
-app.post("/progress",(req,res)=>{
-
-const {videoId,time} = req.body
-
-progress[videoId] = time
-
-res.json({status:"saved"})
-
+app.post("/progress", (req, res) => {
+  const { videoId, time } = req.body
+  if (videoId !== undefined) {
+    progress[videoId] = time
+  }
+  res.json({ status: "saved" })
 })
-
-
 
 // get playback progress
-app.get("/progress/:id",(req,res)=>{
-
-const id = req.params.id
-
-res.json({time:progress[id] || 0})
-
+app.get("/progress/:id", (req, res) => {
+  const id = req.params.id
+  res.json({ time: progress[id] || 0 })
 })
 
+// SIMPLE VIDEO STREAMING - No range handling for now
+app.get("/video/:id", (req, res) => {
+  if (!ready) {
+    return res.status(503).send("Server loading...")
+  }
 
+  const id = parseInt(req.params.id)
+  const video = videos.find(v => v.id === id)
 
-// video streaming
-app.get("/video/:id",(req,res)=>{
+  if (!video) {
+    return res.status(404).send("Video not found")
+  }
 
-if(!ready) return res.status(503).send("Loading")
+  console.log(`Streaming: ${video.name}`)
 
-const id = parseInt(req.params.id)
+  // Update analytics
+  views[id] = (views[id] || 0) + 1
+  history.push({
+    id: id,
+    name: video.name,
+    time: Date.now()
+  })
 
-const video = videos.find(v=>v.id === id)
+  const file = video.file
+  const fileSize = video.size
 
-if(!video) return res.status(404).send("Video not found")
+  // Set proper headers
+  res.setHeader('Content-Type', 'video/mp4')
+  res.setHeader('Content-Length', fileSize)
+  res.setHeader('Accept-Ranges', 'bytes')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Access-Control-Allow-Origin', '*')
 
-views[id] = (views[id] || 0) + 1
+  // Create download stream
+  const stream = file.download()
+  
+  stream.on('error', (err) => {
+    console.error('Stream error:', err)
+    if (!res.headersSent) {
+      res.status(500).send('Streaming error')
+    }
+  })
 
-history.push({
-id:id,
-name:video.name,
-time:Date.now()
+  stream.pipe(res)
 })
 
-const file = video.file
-const fileSize = video.size
-
-const range = req.headers.range
-
-// full stream
-if(!range){
-
-res.writeHead(200,{
-"Content-Type":"video/mp4",
-"Content-Length":fileSize,
-"Accept-Ranges":"bytes"
+// Simple test endpoint
+app.get("/test/:id", (req, res) => {
+  const id = parseInt(req.params.id)
+  const video = videos.find(v => v.id === id)
+  
+  if (!video) {
+    return res.status(404).json({ error: "Video not found" })
+  }
+  
+  res.json({
+    id: video.id,
+    name: video.name,
+    size: video.size,
+    ready: ready
+  })
 })
 
-file.download().pipe(res)
-return
-}
-
-// partial stream
-const parts = range.replace(/bytes=/,"").split("-")
-
-const start = parseInt(parts[0],10)
-const end = parts[1] ? parseInt(parts[1],10) : fileSize-1
-
-const chunkSize = (end - start) + 1
-
-res.writeHead(206,{
-"Content-Range":`bytes ${start}-${end}/${fileSize}`,
-"Accept-Ranges":"bytes",
-"Content-Length":chunkSize,
-"Content-Type":"video/mp4"
-})
-
-file.download({start,end}).pipe(res)
-
-})
-
-
-
-// start server
-app.listen(PORT,()=>{
-console.log("Server running on port",PORT)
+// Start server
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`)
+  console.log(`Test: http://localhost:${PORT}/`)
+  console.log(`List: http://localhost:${PORT}/list`)
+  console.log(`Video 0: http://localhost:${PORT}/video/0`)
 })
