@@ -1,11 +1,13 @@
 const express = require("express")
 const Mega = require("megajs")
 const cors = require("cors")
+const fs = require("fs")
+const path = require("path")
 
 const app = express()
 
 app.use(cors())
-app.use(express.json())
+app.use(express.json({limit:"10mb"}))
 
 const PORT = process.env.PORT || 3000
 
@@ -18,11 +20,17 @@ let views = {}
 let progress = {}
 let history = []
 
+const thumbDir = path.join(__dirname,"thumbs")
+
+if(!fs.existsSync(thumbDir)){
+fs.mkdirSync(thumbDir)
+}
+
 function loadFolder(){
 
 const folder = Mega.File.fromURL(folderURL)
 
-folder.loadAttributes(err => {
+folder.loadAttributes(err=>{
 
 if(err){
 console.log("MEGA error:",err)
@@ -69,7 +77,7 @@ res.json(videos.map(v=>({
 id:v.id,
 name:v.name,
 size:v.size,
-views:views[v.id] || 0
+views:views[v.id]||0
 })))
 
 })
@@ -78,7 +86,7 @@ views:views[v.id] || 0
 
 app.get("/search",(req,res)=>{
 
-const q=(req.query.q || "").toLowerCase()
+const q=(req.query.q||"").toLowerCase()
 
 const results=videos.filter(v=>v.name.toLowerCase().includes(q))
 
@@ -112,7 +120,7 @@ const sorted=[...videos].sort((a,b)=>(views[b.id]||0)-(views[a.id]||0))
 res.json(sorted.slice(0,10).map(v=>({
 id:v.id,
 name:v.name,
-views:views[v.id] || 0
+views:views[v.id]||0
 })))
 
 })
@@ -141,7 +149,25 @@ app.get("/progress/:id",(req,res)=>{
 
 const id=req.params.id
 
-res.json({time:progress[id] || 0})
+res.json({time:progress[id]||0})
+
+})
+
+
+
+app.post("/thumbnail",(req,res)=>{
+
+const {videoId,image}=req.body
+
+if(!image) return res.status(400).send("No image")
+
+const base64=image.replace(/^data:image\/png;base64,/,"")
+
+const filePath=path.join(thumbDir,videoId+".png")
+
+fs.writeFileSync(filePath,base64,"base64")
+
+res.json({status:"saved"})
 
 })
 
@@ -149,25 +175,28 @@ res.json({time:progress[id] || 0})
 
 app.get("/thumbnail/:id",(req,res)=>{
 
-const id=parseInt(req.params.id)
+const id=req.params.id
 
-const video=videos.find(v=>v.id===id)
+const filePath=path.join(thumbDir,id+".png")
 
-if(!video) return res.status(404).send("Not found")
+if(fs.existsSync(filePath)){
 
-const title=video.name.substring(0,35)
+res.sendFile(filePath)
+
+}else{
 
 const svg=`
 <svg width="400" height="225" xmlns="http://www.w3.org/2000/svg">
 <rect width="100%" height="100%" fill="#111"/>
 <circle cx="200" cy="112" r="35" fill="#2563eb"/>
 <polygon points="190,95 190,130 225,112" fill="white"/>
-<text x="200" y="200" font-size="16" fill="white" text-anchor="middle">${title}</text>
 </svg>
 `
 
 res.setHeader("Content-Type","image/svg+xml")
 res.send(svg)
+
+}
 
 })
 
@@ -183,7 +212,7 @@ const video=videos.find(v=>v.id===id)
 
 if(!video) return res.status(404).send("Video not found")
 
-views[id]=(views[id] || 0) + 1
+views[id]=(views[id]||0)+1
 
 history.push({
 id:id,
@@ -209,7 +238,7 @@ const parts=range.replace(/bytes=/,"").split("-")
 
 const start=parseInt(parts[0],10)
 
-const end=parts[1] ? parseInt(parts[1],10) : file.size-1
+const end=parts[1]?parseInt(parts[1],10):file.size-1
 
 const chunkSize=(end-start)+1
 
