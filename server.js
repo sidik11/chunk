@@ -1,204 +1,343 @@
-const express = require("express")
-const Mega = require("megajs")
-const cors = require("cors")
+const express = require("express");
+const Mega = require("megajs");
+const cors = require("cors");
 
-const app = express()
+const app = express();
 
-app.use(cors())
-app.use(express.json())
+// Enhanced CORS configuration
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Range', 'Accept'],
+  exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'Content-Type']
+}));
 
-const PORT = process.env.PORT || 3000
+app.use(express.json());
 
-const folderURL = "https://mega.nz/folder/o7ZHQBQT#VezNIK2oyYEW3LxRAjcPfQ"
+const PORT = process.env.PORT || 3000;
+const folderURL = "https://mega.nz/folder/o7ZHQBQT#VezNIK2oyYEW3LxRAjcPfQ";
 
-let videos = []
-let ready = false
+let videos = [];
+let ready = false;
+let lastLoadAttempt = 0;
+let loadError = null;
 
-// analytics
-let views = {}
-let progress = {}
-let history = []
+// Analytics
+let views = {};
+let progress = {};
+let history = [];
 
-// load MEGA folder
+// Clean old history (keep last 100 entries)
+setInterval(() => {
+  if (history.length > 100) {
+    history = history.slice(-100);
+  }
+}, 3600000);
+
+// Load MEGA folder with retry logic
 function loadFolder() {
-  console.log("Loading MEGA folder...")
+  const now = Date.now();
+  if (now - lastLoadAttempt < 10000 && !ready) return; // Don't retry too often
   
-  const folder = Mega.File.fromURL(folderURL)
+  lastLoadAttempt = now;
+  loadError = null;
   
-  folder.loadAttributes(err => {
-    if (err) {
-      console.log("MEGA error:", err)
-      return
-    }
+  console.log("Loading MEGA folder...");
+  
+  try {
+    const folder = Mega.File.fromURL(folderURL);
     
-    const files = folder.children || []
-    
-    videos = files
-      .filter(f => f && f.name && f.size && /\.(mp4|mkv|webm|mov)$/i.test(f.name))
-      .map((f, i) => ({
-        id: i,
-        name: f.name,
-        size: f.size,
-        file: f
-      }))
-    
-    ready = true
-    console.log("Loaded", videos.length, "videos")
-    console.log("First video:", videos[0]?.name)
-  })
+    folder.loadAttributes((err) => {
+      if (err) {
+        console.error("MEGA error:", err.message);
+        loadError = err.message;
+        ready = false;
+        return;
+      }
+
+      const files = folder.children || [];
+      
+      videos = files
+        .filter(f => f && f.name && f.size && /\.(mp4|mkv|webm|mov|avi)$/i.test(f.name))
+        .map((f, i) => ({
+          id: i,
+          name: f.name,
+          size: f.size,
+          file: f,
+          type: f.name.split('.').pop().toLowerCase()
+        }));
+
+      ready = true;
+      loadError = null;
+      console.log(`✅ Loaded ${videos.length} videos`);
+
+      // Initialize view counts for new videos
+      videos.forEach(v => {
+        if (!views[v.id]) views[v.id] = 0;
+      });
+    });
+  } catch (error) {
+    console.error("Folder parsing error:", error);
+    loadError = error.message;
+    ready = false;
+  }
 }
 
-loadFolder()
+// Initial load
+loadFolder();
 
-// refresh list every 60s
-setInterval(loadFolder, 60000)
+// Refresh every 5 minutes
+setInterval(loadFolder, 300000);
 
-// Simple status endpoint
+// Health check endpoint
 app.get("/", (req, res) => {
-  res.json({ 
-    status: ready ? "ready" : "loading", 
+  res.json({
+    status: "online",
     videos: videos.length,
-    message: "Mega streaming server running"
-  })
-})
+    ready: ready,
+    error: loadError,
+    uptime: process.uptime()
+  });
+});
 
-// video list
+// Get video list with views
 app.get("/list", (req, res) => {
-  if (!ready) return res.json([])
-  
-  res.json(videos.map(v => ({
+  if (!ready) {
+    return res.json({ 
+      status: "loading", 
+      message: "Server is loading videos",
+      videos: [] 
+    });
+  }
+
+  const videoList = videos.map(v => ({
     id: v.id,
     name: v.name,
     size: v.size,
+    type: v.type,
     views: views[v.id] || 0
-  })))
-})
+  }));
 
-// search videos
+  res.json(videoList);
+});
+
+// Search videos
 app.get("/search", (req, res) => {
-  const q = (req.query.q || "").toLowerCase()
+  const q = (req.query.q || "").toLowerCase().trim();
   
+  if (!q) {
+    return res.json([]);
+  }
+
   const results = videos.filter(v =>
     v.name.toLowerCase().includes(q)
-  )
-  
-  res.json(results.map(v => ({
+  ).map(v => ({
     id: v.id,
     name: v.name,
-    size: v.size
-  })))
-})
+    size: v.size,
+    type: v.type
+  }));
 
-// recent videos
+  res.json(results);
+});
+
+// Recent videos
 app.get("/recent", (req, res) => {
-  const recent = [...videos].slice(-10).reverse()
-  
-  res.json(recent.map(v => ({
-    id: v.id,
-    name: v.name
-  })))
-})
+  const recent = [...videos]
+    .slice(-20)
+    .reverse()
+    .map(v => ({
+      id: v.id,
+      name: v.name,
+      size: v.size,
+      type: v.type
+    }));
 
-// popular videos
+  res.json(recent);
+});
+
+// Popular videos
 app.get("/popular", (req, res) => {
-  const sorted = [...videos].sort((a, b) =>
-    (views[b.id] || 0) - (views[a.id] || 0)
-  )
-  
-  res.json(sorted.slice(0, 10).map(v => ({
-    id: v.id,
-    name: v.name,
-    views: views[v.id] || 0
-  })))
-})
+  const popular = [...videos]
+    .sort((a, b) => (views[b.id] || 0) - (views[a.id] || 0))
+    .slice(0, 20)
+    .map(v => ({
+      id: v.id,
+      name: v.name,
+      size: v.size,
+      type: v.type,
+      views: views[v.id] || 0
+    }));
 
-// watch history
+  res.json(popular);
+});
+
+// Watch history
 app.get("/history", (req, res) => {
-  res.json(history.slice(-20).reverse())
-})
+  res.json(history.slice(-20).reverse());
+});
 
-// save playback progress
+// Save playback progress
 app.post("/progress", (req, res) => {
-  const { videoId, time } = req.body
-  if (videoId !== undefined) {
-    progress[videoId] = time
+  const { videoId, time } = req.body;
+  
+  if (videoId !== undefined && time !== undefined) {
+    progress[videoId] = Math.max(0, parseFloat(time) || 0);
+    res.json({ status: "saved", videoId, time });
+  } else {
+    res.status(400).json({ error: "Missing videoId or time" });
   }
-  res.json({ status: "saved" })
-})
+});
 
-// get playback progress
+// Get playback progress
 app.get("/progress/:id", (req, res) => {
-  const id = req.params.id
-  res.json({ time: progress[id] || 0 })
-})
+  const id = parseInt(req.params.id);
+  const savedTime = progress[id] || 0;
+  res.json({ time: savedTime });
+});
 
-// SIMPLE VIDEO STREAMING - No range handling for now
-app.get("/video/:id", (req, res) => {
-  if (!ready) {
-    return res.status(503).send("Server loading...")
-  }
-
-  const id = parseInt(req.params.id)
-  const video = videos.find(v => v.id === id)
-
-  if (!video) {
-    return res.status(404).send("Video not found")
-  }
-
-  console.log(`Streaming: ${video.name}`)
-
-  // Update analytics
-  views[id] = (views[id] || 0) + 1
-  history.push({
-    id: id,
-    name: video.name,
-    time: Date.now()
-  })
-
-  const file = video.file
-  const fileSize = video.size
-
-  // Set proper headers
-  res.setHeader('Content-Type', 'video/mp4')
-  res.setHeader('Content-Length', fileSize)
-  res.setHeader('Accept-Ranges', 'bytes')
-  res.setHeader('Cache-Control', 'no-cache')
-  res.setHeader('Access-Control-Allow-Origin', '*')
-
-  // Create download stream
-  const stream = file.download()
-  
-  stream.on('error', (err) => {
-    console.error('Stream error:', err)
-    if (!res.headersSent) {
-      res.status(500).send('Streaming error')
-    }
-  })
-
-  stream.pipe(res)
-})
-
-// Simple test endpoint
-app.get("/test/:id", (req, res) => {
-  const id = parseInt(req.params.id)
-  const video = videos.find(v => v.id === id)
+// Get video info
+app.get("/info/:id", (req, res) => {
+  const id = parseInt(req.params.id);
+  const video = videos.find(v => v.id === id);
   
   if (!video) {
-    return res.status(404).json({ error: "Video not found" })
+    return res.status(404).json({ error: "Video not found" });
   }
-  
+
   res.json({
     id: video.id,
     name: video.name,
     size: video.size,
-    ready: ready
-  })
-})
+    type: video.type,
+    views: views[video.id] || 0
+  });
+});
+
+// Video streaming endpoint with proper headers
+app.get("/video/:id", (req, res) => {
+  if (!ready) {
+    return res.status(503).json({ error: "Server loading videos" });
+  }
+
+  const id = parseInt(req.params.id);
+  const video = videos.find(v => v.id === id);
+
+  if (!video) {
+    return res.status(404).json({ error: "Video not found" });
+  }
+
+  // Track view (only count unique plays)
+  views[id] = (views[id] || 0) + 1;
+
+  // Add to history
+  history.push({
+    id: id,
+    name: video.name,
+    time: Date.now()
+  });
+
+  const file = video.file;
+  const fileSize = video.size;
+  const range = req.headers.range;
+
+  // Set proper content type based on file extension
+  const ext = video.type;
+  let contentType = 'video/mp4';
+  if (ext === 'mkv') contentType = 'video/x-matroska';
+  else if (ext === 'webm') contentType = 'video/webm';
+  else if (ext === 'mov') contentType = 'video/quicktime';
+  else if (ext === 'avi') contentType = 'video/x-msvideo';
+
+  // CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length, Content-Type');
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Cache-Control', 'no-cache');
+
+  // Handle OPTIONS request
+  if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Range');
+    return res.status(204).end();
+  }
+
+  // If no range header, send full video
+  if (!range) {
+    console.log(`Serving full video: ${video.name}`);
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': fileSize,
+    });
+
+    const stream = file.download();
+    stream.on('error', (err) => {
+      console.error('Stream error:', err);
+      if (!res.headersSent) {
+        res.status(500).end();
+      }
+    });
+    
+    stream.pipe(res);
+    return;
+  }
+
+  // Parse range header
+  const parts = range.replace(/bytes=/, "").split("-");
+  const start = parseInt(parts[0], 10);
+  const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+  // Validate range
+  if (start >= fileSize || end >= fileSize) {
+    res.writeHead(416, {
+      'Content-Range': `bytes */${fileSize}`
+    });
+    return res.end();
+  }
+
+  const chunkSize = (end - start) + 1;
+
+  console.log(`Streaming ${video.name}: bytes ${start}-${end}/${fileSize}`);
+
+  res.writeHead(206, {
+    'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+    'Accept-Ranges': 'bytes',
+    'Content-Length': chunkSize,
+    'Content-Type': contentType,
+  });
+
+  try {
+    const stream = file.download({ start, end });
+    
+    stream.on('error', (err) => {
+      console.error('Stream error:', err);
+      if (!res.headersSent) {
+        res.status(500).end();
+      }
+    });
+
+    stream.pipe(res);
+  } catch (error) {
+    console.error('Download error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Streaming failed' });
+    }
+  }
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Server error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Endpoint not found' });
+});
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`)
-  console.log(`Test: http://localhost:${PORT}/`)
-  console.log(`List: http://localhost:${PORT}/list`)
-  console.log(`Video 0: http://localhost:${PORT}/video/0`)
-})
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📁 Folder URL: ${folderURL}`);
+});
