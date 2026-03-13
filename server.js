@@ -13,6 +13,7 @@ const folderURL = "https://mega.nz/folder/o7ZHQBQT#VezNIK2oyYEW3LxRAjcPfQ"
 
 let videos = []
 let ready = false
+let megaFolder = null
 
 // analytics
 let views = {}
@@ -21,6 +22,8 @@ let history = []
 
 // load MEGA folder
 function loadFolder() {
+  console.log("Loading MEGA folder...")
+  
   const folder = Mega.File.fromURL(folderURL)
   
   folder.loadAttributes(err => {
@@ -29,6 +32,7 @@ function loadFolder() {
       return
     }
     
+    megaFolder = folder
     const files = folder.children || []
     
     videos = files
@@ -37,12 +41,35 @@ function loadFolder() {
         id: i,
         name: f.name,
         size: f.size,
-        file: f
+        file: f,
+        mimeType: getMimeType(f.name)
       }))
     
     ready = true
     console.log("Loaded", videos.length, "videos")
+    
+    // Log first few videos for debugging
+    videos.slice(0, 3).forEach(v => {
+      console.log(`Video ${v.id}: ${v.name} (${formatBytes(v.size)})`)
+    })
   })
+}
+
+function getMimeType(filename) {
+  const ext = filename.split('.').pop().toLowerCase()
+  const mimeTypes = {
+    'mp4': 'video/mp4',
+    'mkv': 'video/x-matroska',
+    'webm': 'video/webm',
+    'mov': 'video/quicktime'
+  }
+  return mimeTypes[ext] || 'video/mp4'
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 B'
+  const mb = bytes / 1024 / 1024
+  return mb.toFixed(2) + ' MB'
 }
 
 loadFolder()
@@ -52,7 +79,33 @@ setInterval(loadFolder, 60000)
 
 // server status
 app.get("/", (req, res) => {
-  res.send("Mega streaming server running")
+  res.send(`
+    <h1>Mega Streaming Server</h1>
+    <p>Status: ${ready ? '✅ Ready' : '⏳ Loading...'}</p>
+    <p>Videos loaded: ${videos.length}</p>
+    <p>Endpoints:</p>
+    <ul>
+      <li><a href="/list">/list</a> - List all videos</li>
+      <li><a href="/debug">/debug</a> - Debug info</li>
+      <li><a href="/video/0">/video/0</a> - Stream video 0</li>
+    </ul>
+  `)
+})
+
+// Debug endpoint
+app.get("/debug", (req, res) => {
+  res.json({
+    ready,
+    videoCount: videos.length,
+    videos: videos.map(v => ({
+      id: v.id,
+      name: v.name,
+      size: formatBytes(v.size),
+      mimeType: v.mimeType
+    })),
+    views,
+    memory: process.memoryUsage()
+  })
 })
 
 // video list
@@ -63,6 +116,7 @@ app.get("/list", (req, res) => {
     id: v.id,
     name: v.name,
     size: v.size,
+    mimeType: v.mimeType,
     views: views[v.id] || 0
   })))
 })
@@ -78,7 +132,8 @@ app.get("/search", (req, res) => {
   res.json(results.map(v => ({
     id: v.id,
     name: v.name,
-    size: v.size
+    size: v.size,
+    mimeType: v.mimeType
   })))
 })
 
@@ -89,7 +144,8 @@ app.get("/recent", (req, res) => {
   res.json(recent.map(v => ({
     id: v.id,
     name: v.name,
-    size: v.size
+    size: v.size,
+    mimeType: v.mimeType
   })))
 })
 
@@ -103,6 +159,7 @@ app.get("/popular", (req, res) => {
     id: v.id,
     name: v.name,
     size: v.size,
+    mimeType: v.mimeType,
     views: views[v.id] || 0
   })))
 })
@@ -115,7 +172,9 @@ app.get("/history", (req, res) => {
 // save playback progress
 app.post("/progress", (req, res) => {
   const { videoId, time } = req.body
-  progress[videoId] = time
+  if (videoId !== undefined) {
+    progress[videoId] = time
+  }
   res.json({ status: "saved" })
 })
 
@@ -125,12 +184,8 @@ app.get("/progress/:id", (req, res) => {
   res.json({ time: progress[id] || 0 })
 })
 
-// FIXED: Video streaming with proper headers and error handling
-app.get("/video/:id", (req, res) => {
-  if (!ready) {
-    return res.status(503).json({ error: "Server loading" })
-  }
-  
+// Test endpoint
+app.get("/test/:id", async (req, res) => {
   const id = parseInt(req.params.id)
   const video = videos.find(v => v.id === id)
   
@@ -138,30 +193,86 @@ app.get("/video/:id", (req, res) => {
     return res.status(404).json({ error: "Video not found" })
   }
   
-  // Update analytics
-  views[id] = (views[id] || 0) + 1
-  history.push({
-    id: id,
-    name: video.name,
-    time: Date.now()
-  })
-  
-  const file = video.file
-  const fileSize = video.size
-  
-  // Get range header
-  const range = req.headers.range
+  try {
+    // Try to get file info
+    const file = video.file
+    res.json({
+      id: video.id,
+      name: video.name,
+      size: video.size,
+      sizeFormatted: formatBytes(video.size),
+      mimeType: video.mimeType,
+      ready: ready,
+      hasFile: !!file,
+      fileAttributes: file ? Object.keys(file) : []
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// FIXED: Video streaming with better error handling
+app.get("/video/:id", async (req, res) => {
+  const startTime = Date.now()
   
   try {
-    // Set proper headers for video streaming
+    if (!ready) {
+      console.log("Server not ready")
+      return res.status(503).json({ error: "Server loading" })
+    }
+    
+    const id = parseInt(req.params.id)
+    const video = videos.find(v => v.id === id)
+    
+    if (!video) {
+      console.log(`Video ${id} not found`)
+      return res.status(404).json({ error: "Video not found" })
+    }
+    
+    console.log(`Streaming request for: ${video.name} (ID: ${id})`)
+    
+    // Update analytics
+    views[id] = (views[id] || 0) + 1
+    history.push({
+      id: id,
+      name: video.name,
+      time: Date.now()
+    })
+    
+    const file = video.file
+    const fileSize = video.size
+    
+    if (!file) {
+      console.log(`File object missing for video ${id}`)
+      return res.status(500).json({ error: "File object missing" })
+    }
+    
+    // Get range header
+    const range = req.headers.range
+    console.log(`Range header: ${range || 'none'}`)
+    
+    // Set CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Range')
+    
+    // Handle preflight
+    if (req.method === 'OPTIONS') {
+      return res.status(200).end()
+    }
+    
+    // Set content type based on file extension
+    res.setHeader('Content-Type', video.mimeType)
     res.setHeader('Accept-Ranges', 'bytes')
-    res.setHeader('Content-Type', 'video/mp4')
+    res.setHeader('Cache-Control', 'no-cache')
     
     if (!range) {
       // Full video request
+      console.log(`Sending full video (${formatBytes(fileSize)})`)
       res.setHeader('Content-Length', fileSize)
       res.status(200)
       
+      // Create download stream with error handling
       const stream = file.download()
       
       stream.on('error', (err) => {
@@ -169,6 +280,10 @@ app.get("/video/:id", (req, res) => {
         if (!res.headersSent) {
           res.status(500).end()
         }
+      })
+      
+      stream.on('end', () => {
+        console.log(`Stream ended for ${video.name} (${Date.now() - startTime}ms)`)
       })
       
       stream.pipe(res)
@@ -179,45 +294,42 @@ app.get("/video/:id", (req, res) => {
       const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1
       const chunkSize = (end - start) + 1
       
+      console.log(`Sending partial ${start}-${end}/${fileSize} (${formatBytes(chunkSize)})`)
+      
       res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`)
       res.setHeader('Content-Length', chunkSize)
       res.status(206)
       
+      // Create partial download stream
       const stream = file.download({ start, end })
       
       stream.on('error', (err) => {
-        console.error('Stream error:', err)
+        console.error('Partial stream error:', err)
         if (!res.headersSent) {
           res.status(500).end()
         }
+      })
+      
+      stream.on('end', () => {
+        console.log(`Partial stream ended (${Date.now() - startTime}ms)`)
       })
       
       stream.pipe(res)
     }
   } catch (err) {
     console.error('Video streaming error:', err)
-    res.status(500).json({ error: 'Streaming failed' })
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message })
+    }
   }
-})
-
-// Add a test endpoint to verify video streaming
-app.get("/test/:id", async (req, res) => {
-  const id = parseInt(req.params.id)
-  const video = videos.find(v => v.id === id)
-  
-  if (!video) {
-    return res.status(404).json({ error: "Video not found" })
-  }
-  
-  res.json({
-    id: video.id,
-    name: video.name,
-    size: video.size,
-    ready: ready
-  })
 })
 
 // Start server
 app.listen(PORT, () => {
   console.log("Server running on port", PORT)
+  console.log(`Test URLs:
+  - http://localhost:${PORT}/debug
+  - http://localhost:${PORT}/list
+  - http://localhost:${PORT}/video/0
+  `)
 })
