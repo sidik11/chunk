@@ -1,16 +1,15 @@
 const express = require("express");
 const Mega = require("megajs");
 const cors = require("cors");
-const https = require('https');
 
 const app = express();
 
-// Aggressive CORS
+// Comprehensive CORS
 app.use(cors({
   origin: '*',
-  methods: ['GET', 'OPTIONS'],
-  allowedHeaders: ['Range', 'Content-Type', 'Accept'],
-  exposedHeaders: ['Content-Range', 'Content-Length', 'Content-Type', 'Accept-Ranges']
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Range', 'Accept'],
+  exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'Content-Type']
 }));
 
 app.use(express.json());
@@ -21,13 +20,12 @@ const folderURL = "https://mega.nz/folder/o7ZHQBQT#VezNIK2oyYEW3LxRAjcPfQ";
 let videos = [];
 let ready = false;
 
-// Increase HTTPS agent timeout
-const agent = new https.Agent({
-  keepAlive: true,
-  timeout: 60000,
-  maxSockets: 10
-});
+// Analytics (matching frontend expectations)
+let views = {};
+let progress = {};
+let history = [];
 
+// Load MEGA folder
 function loadFolder() {
   console.log("Loading MEGA folder...");
   
@@ -49,17 +47,16 @@ function loadFolder() {
           id: i,
           name: f.name,
           size: f.size,
-          file: f,
-          // Determine content type
-          contentType: f.name.toLowerCase().endsWith('.mp4') ? 'video/mp4' :
-                      f.name.toLowerCase().endsWith('.webm') ? 'video/webm' :
-                      f.name.toLowerCase().endsWith('.mov') ? 'video/quicktime' :
-                      f.name.toLowerCase().endsWith('.mkv') ? 'video/x-matroska' : 'video/mp4'
+          file: f
         }));
 
       ready = true;
       console.log(`✅ Loaded ${videos.length} videos`);
-      videos.forEach(v => console.log(`  ${v.id}: ${v.name} (${v.contentType})`));
+      
+      // Initialize view counts
+      videos.forEach(v => {
+        if (!views[v.id]) views[v.id] = 0;
+      });
     });
   } catch (error) {
     console.error("Error:", error);
@@ -68,19 +65,16 @@ function loadFolder() {
 }
 
 loadFolder();
-setInterval(loadFolder, 300000);
+setInterval(loadFolder, 60000); // Refresh every minute
 
-// Status
+// ============= ENDPOINTS MATCHING YOUR FRONTEND =============
+
+// Server status (root)
 app.get("/", (req, res) => {
-  res.json({ 
-    status: "online", 
-    videos: videos.length, 
-    ready,
-    version: "2.0"
-  });
+  res.send("Mega streaming server running");
 });
 
-// List videos
+// Video list with views
 app.get("/list", (req, res) => {
   if (!ready) return res.json([]);
   
@@ -88,35 +82,80 @@ app.get("/list", (req, res) => {
     id: v.id,
     name: v.name,
     size: v.size,
-    type: v.contentType
+    views: views[v.id] || 0
   })));
 });
 
-// Direct download URL (alternative approach)
-app.get("/direct/:id", (req, res) => {
-  const id = parseInt(req.params.id);
-  const video = videos.find(v => v.id === id);
+// Search videos
+app.get("/search", (req, res) => {
+  const q = (req.query.q || "").toLowerCase();
   
-  if (!video) {
-    return res.status(404).json({ error: "Video not found" });
-  }
-
-  // Get direct download link from MEGA
-  video.file.link((err, url) => {
-    if (err) {
-      return res.status(500).json({ error: "Failed to get download link" });
-    }
-    res.json({ url });
-  });
+  const results = videos.filter(v =>
+    v.name.toLowerCase().includes(q)
+  );
+  
+  res.json(results.map(v => ({
+    id: v.id,
+    name: v.name,
+    size: v.size
+  })));
 });
 
-// Video streaming - SIMPLIFIED
+// Recent videos (last 10)
+app.get("/recent", (req, res) => {
+  const recent = [...videos].slice(-10).reverse();
+  
+  res.json(recent.map(v => ({
+    id: v.id,
+    name: v.name,
+    size: v.size
+  })));
+});
+
+// Popular videos (most viewed)
+app.get("/popular", (req, res) => {
+  const sorted = [...videos].sort((a, b) =>
+    (views[b.id] || 0) - (views[a.id] || 0)
+  );
+  
+  res.json(sorted.slice(0, 10).map(v => ({
+    id: v.id,
+    name: v.name,
+    size: v.size,
+    views: views[v.id] || 0
+  })));
+});
+
+// Watch history (last 20)
+app.get("/history", (req, res) => {
+  res.json(history.slice(-20).reverse());
+});
+
+// Save playback progress
+app.post("/progress", (req, res) => {
+  const { videoId, time } = req.body;
+  
+  if (videoId !== undefined) {
+    progress[videoId] = time || 0;
+    res.json({ status: "saved" });
+  } else {
+    res.status(400).json({ error: "Missing videoId" });
+  }
+});
+
+// Get playback progress
+app.get("/progress/:id", (req, res) => {
+  const id = parseInt(req.params.id);
+  res.json({ time: progress[id] || 0 });
+});
+
+// VIDEO STREAMING - CRITICAL FIX
 app.get("/video/:id", (req, res) => {
-  console.log(`📺 Request for video ID: ${req.params.id}`);
+  console.log(`🎬 Video request for ID: ${req.params.id}`);
   
   if (!ready) {
     console.log("❌ Server not ready");
-    return res.status(503).send("Server loading");
+    return res.status(503).send("Loading");
   }
 
   const id = parseInt(req.params.id);
@@ -129,41 +168,48 @@ app.get("/video/:id", (req, res) => {
 
   console.log(`✅ Found: ${video.name} (${video.size} bytes)`);
 
+  // Track view
+  views[id] = (views[id] || 0) + 1;
+
+  // Add to history
+  history.push({
+    id: id,
+    name: video.name,
+    time: Date.now()
+  });
+
   const file = video.file;
   const fileSize = video.size;
   const range = req.headers.range;
 
-  // Set headers
+  // Set essential headers
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Content-Type, Accept-Ranges');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
   res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('Content-Type', video.contentType);
-  res.setHeader('Cache-Control', 'public, max-age=3600');
-  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(video.name)}"`);
+  res.setHeader('Content-Type', 'video/mp4');
+  res.setHeader('Cache-Control', 'no-cache');
 
-  // Handle OPTIONS
+  // Handle OPTIONS preflight
   if (req.method === 'OPTIONS') {
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Range');
     return res.status(200).end();
   }
 
-  // No range - send full file with 200
+  // No range header - send full video (200 OK)
   if (!range) {
-    console.log(`📤 Sending full file: ${video.name}`);
+    console.log(`📤 Sending full video: ${video.name}`);
     res.setHeader('Content-Length', fileSize);
     res.status(200);
     
     try {
-      const stream = file.download({ agent });
+      const stream = file.download();
       
       stream.on('error', (err) => {
         console.error('Stream error:', err);
         if (!res.headersSent) {
           res.status(500).send('Stream error');
         }
-      });
-
-      stream.on('end', () => {
-        console.log(`✅ Finished: ${video.name}`);
       });
 
       stream.pipe(res);
@@ -174,7 +220,7 @@ app.get("/video/:id", (req, res) => {
     return;
   }
 
-  // Parse range
+  // Parse range header (206 Partial Content)
   const parts = range.replace(/bytes=/, "").split("-");
   const start = parseInt(parts[0], 10);
   const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
@@ -194,12 +240,13 @@ app.get("/video/:id", (req, res) => {
   // Send partial content
   res.writeHead(206, {
     'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+    'Accept-Ranges': 'bytes',
     'Content-Length': chunkSize,
-    'Content-Type': video.contentType,
+    'Content-Type': 'video/mp4',
   });
 
   try {
-    const stream = file.download({ start, end, agent });
+    const stream = file.download({ start, end });
     
     stream.on('error', (err) => {
       console.error('Stream error:', err);
@@ -213,7 +260,20 @@ app.get("/video/:id", (req, res) => {
   }
 });
 
+// Error handling
+app.use((err, req, res, next) => {
+  console.error('Server error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).send('Endpoint not found');
+});
+
+// Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🌍 CORS enabled for all origins`);
+  console.log(`📁 Folder: ${folderURL}`);
+  console.log(`✅ All endpoints ready: /list, /search, /recent, /popular, /history, /progress, /video/:id`);
 });
