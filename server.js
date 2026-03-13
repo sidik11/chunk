@@ -147,32 +147,6 @@ res.json({time:progress[id] || 0})
 
 
 
-app.get("/thumbnail/:id",(req,res)=>{
-
-const id=parseInt(req.params.id)
-
-const video=videos.find(v=>v.id===id)
-
-if(!video) return res.status(404).send("Not found")
-
-const title=video.name.substring(0,35)
-
-const svg=`
-<svg width="400" height="225" xmlns="http://www.w3.org/2000/svg">
-<rect width="100%" height="100%" fill="#111"/>
-<circle cx="200" cy="112" r="35" fill="#2563eb"/>
-<polygon points="190,95 190,130 225,112" fill="white"/>
-<text x="200" y="200" font-size="16" fill="white" text-anchor="middle">${title}</text>
-</svg>
-`
-
-res.setHeader("Content-Type","image/svg+xml")
-res.send(svg)
-
-})
-
-
-
 app.get("/video/:id",(req,res)=>{
 
 if(!ready) return res.status(503).send("Loading")
