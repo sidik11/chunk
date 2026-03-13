@@ -3,7 +3,6 @@ const Mega = require("megajs")
 const cors = require("cors")
 
 const app = express()
-
 app.use(cors())
 app.use(express.json())
 
@@ -14,6 +13,7 @@ const folderURL = "https://mega.nz/folder/o7ZHQBQT#VezNIK2oyYEW3LxRAjcPfQ"
 let videos = []
 let ready = false
 
+// analytics
 let views = {}
 let progress = {}
 let history = []
@@ -22,7 +22,7 @@ function loadFolder(){
 
 const folder = Mega.File.fromURL(folderURL)
 
-folder.loadAttributes(err => {
+folder.loadAttributes(err=>{
 
 if(err){
 console.log("MEGA error:",err)
@@ -69,7 +69,7 @@ res.json(videos.map(v=>({
 id:v.id,
 name:v.name,
 size:v.size,
-views:views[v.id] || 0
+views:views[v.id]||0
 })))
 
 })
@@ -78,9 +78,9 @@ views:views[v.id] || 0
 
 app.get("/search",(req,res)=>{
 
-const q=(req.query.q || "").toLowerCase()
+const q = (req.query.q || "").toLowerCase()
 
-const results=videos.filter(v=>v.name.toLowerCase().includes(q))
+const results = videos.filter(v=>v.name.toLowerCase().includes(q))
 
 res.json(results.map(v=>({
 id:v.id,
@@ -94,7 +94,7 @@ size:v.size
 
 app.get("/recent",(req,res)=>{
 
-const recent=[...videos].slice(-10).reverse()
+const recent = [...videos].slice(-10).reverse()
 
 res.json(recent.map(v=>({
 id:v.id,
@@ -107,12 +107,12 @@ name:v.name
 
 app.get("/popular",(req,res)=>{
 
-const sorted=[...videos].sort((a,b)=>(views[b.id]||0)-(views[a.id]||0))
+const sorted = [...videos].sort((a,b)=>(views[b.id]||0)-(views[a.id]||0))
 
 res.json(sorted.slice(0,10).map(v=>({
 id:v.id,
 name:v.name,
-views:views[v.id] || 0
+views:views[v.id]||0
 })))
 
 })
@@ -127,9 +127,9 @@ res.json(history.slice(-20).reverse())
 
 app.post("/progress",(req,res)=>{
 
-const {videoId,time}=req.body
+const {videoId,time} = req.body
 
-progress[videoId]=time
+progress[videoId] = time
 
 res.json({status:"saved"})
 
@@ -139,7 +139,7 @@ res.json({status:"saved"})
 
 app.get("/progress/:id",(req,res)=>{
 
-const id=req.params.id
+const id = req.params.id
 
 res.json({time:progress[id] || 0})
 
@@ -151,13 +151,13 @@ app.get("/video/:id",(req,res)=>{
 
 if(!ready) return res.status(503).send("Loading")
 
-const id=parseInt(req.params.id)
+const id = parseInt(req.params.id)
 
-const video=videos.find(v=>v.id===id)
+const video = videos.find(v=>v.id === id)
 
 if(!video) return res.status(404).send("Video not found")
 
-views[id]=(views[id] || 0) + 1
+views[id] = (views[id] || 0) + 1
 
 history.push({
 id:id,
@@ -165,9 +165,9 @@ name:video.name,
 time:Date.now()
 })
 
-const file=video.file
+const file = video.file
 
-const range=req.headers.range
+const range = req.headers.range
 
 if(!range){
 
@@ -179,13 +179,13 @@ return
 
 }
 
-const parts=range.replace(/bytes=/,"").split("-")
+const parts = range.replace(/bytes=/,"").split("-")
 
-const start=parseInt(parts[0],10)
+const start = parseInt(parts[0],10)
 
-const end=parts[1] ? parseInt(parts[1],10) : file.size-1
+const end = parts[1] ? parseInt(parts[1],10) : file.size-1
 
-const chunkSize=(end-start)+1
+const chunkSize = (end-start)+1
 
 res.writeHead(206,{
 "Content-Range":`bytes ${start}-${end}/${file.size}`,
@@ -194,7 +194,7 @@ res.writeHead(206,{
 "Content-Type":"video/mp4"
 })
 
-const stream=file.download({start,end})
+const stream = file.download({start,end})
 
 stream.pipe(res)
 
