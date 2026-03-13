@@ -1,13 +1,11 @@
 const express = require("express")
 const Mega = require("megajs")
 const cors = require("cors")
-const fs = require("fs")
-const path = require("path")
 
 const app = express()
 
 app.use(cors())
-app.use(express.json({ limit: "10mb" }))
+app.use(express.json())
 
 const PORT = process.env.PORT || 3000
 
@@ -20,278 +18,216 @@ let views = {}
 let progress = {}
 let history = []
 
-const thumbDir = path.join(__dirname, "thumbs")
+function loadFolder(){
 
-if (!fs.existsSync(thumbDir)) {
-  fs.mkdirSync(thumbDir)
+const folder = Mega.File.fromURL(folderURL)
+
+folder.loadAttributes(err => {
+
+if(err){
+console.log("MEGA error:",err)
+return
 }
 
-/* ---------------- MIME TYPE ---------------- */
+const files = folder.children || []
 
-function getMime(name) {
-  const n = name.toLowerCase()
+videos = files
+.filter(f => f && f.name && f.size && /\.(mp4|mkv|webm|mov)$/i.test(f.name))
+.map((f,i)=>({
+id:i,
+name:f.name,
+size:f.size,
+file:f,
+added:Date.now()
+}))
 
-  if (n.endsWith(".mp4")) return "video/mp4"
-  if (n.endsWith(".webm")) return "video/webm"
-  if (n.endsWith(".mkv")) return "video/x-matroska"
-  if (n.endsWith(".mov")) return "video/quicktime"
+ready = true
 
-  return "application/octet-stream"
-}
+console.log("Loaded",videos.length,"videos")
 
-/* ---------------- LOAD MEGA FOLDER ---------------- */
-
-function loadFolder() {
-
-  const folder = Mega.File.fromURL(folderURL)
-
-  folder.loadAttributes(err => {
-
-    if (err) {
-      console.log("MEGA error:", err)
-      return
-    }
-
-    const files = folder.children || []
-
-    videos = files
-      .filter(f => f && f.name && f.size && /\.(mp4|mkv|webm|mov)$/i.test(f.name))
-      .map((f, i) => ({
-        id: i,
-        name: f.name,
-        size: f.size,
-        file: f,
-        added: Date.now()
-      }))
-
-    ready = true
-
-    console.log("Loaded", videos.length, "videos")
-
-  })
+})
 
 }
 
 loadFolder()
 
-setInterval(loadFolder, 60000)
+setInterval(loadFolder,60000)
 
-/* ---------------- BASIC ---------------- */
 
-app.get("/", (req, res) => {
-  res.send("Mega streaming server running")
+
+app.get("/",(req,res)=>{
+res.send("Mega streaming server running")
 })
 
-/* ---------------- LIST ---------------- */
 
-app.get("/list", (req, res) => {
 
-  if (!ready) return res.json([])
+app.get("/list",(req,res)=>{
 
-  res.json(videos.map(v => ({
-    id: v.id,
-    name: v.name,
-    size: v.size,
-    views: views[v.id] || 0
-  })))
+if(!ready) return res.json([])
 
-})
-
-/* ---------------- SEARCH ---------------- */
-
-app.get("/search", (req, res) => {
-
-  const q = (req.query.q || "").toLowerCase()
-
-  const results = videos.filter(v => v.name.toLowerCase().includes(q))
-
-  res.json(results.map(v => ({
-    id: v.id,
-    name: v.name,
-    size: v.size
-  })))
+res.json(videos.map(v=>({
+id:v.id,
+name:v.name,
+size:v.size,
+views:views[v.id] || 0
+})))
 
 })
 
-/* ---------------- RECENT ---------------- */
 
-app.get("/recent", (req, res) => {
 
-  const recent = [...videos].slice(-10).reverse()
+app.get("/search",(req,res)=>{
 
-  res.json(recent.map(v => ({
-    id: v.id,
-    name: v.name
-  })))
+const q=(req.query.q || "").toLowerCase()
 
-})
+const results=videos.filter(v=>v.name.toLowerCase().includes(q))
 
-/* ---------------- POPULAR ---------------- */
-
-app.get("/popular", (req, res) => {
-
-  const sorted = [...videos].sort((a, b) => (views[b.id] || 0) - (views[a.id] || 0))
-
-  res.json(sorted.slice(0, 10).map(v => ({
-    id: v.id,
-    name: v.name,
-    views: views[v.id] || 0
-  })))
+res.json(results.map(v=>({
+id:v.id,
+name:v.name,
+size:v.size
+})))
 
 })
 
-/* ---------------- HISTORY ---------------- */
 
-app.get("/history", (req, res) => {
-  res.json(history.slice(-20).reverse())
-})
 
-/* ---------------- PROGRESS ---------------- */
+app.get("/recent",(req,res)=>{
 
-app.post("/progress", (req, res) => {
+const recent=[...videos].slice(-10).reverse()
 
-  const { videoId, time } = req.body
-
-  progress[videoId] = time
-
-  res.json({ status: "saved" })
+res.json(recent.map(v=>({
+id:v.id,
+name:v.name
+})))
 
 })
 
-app.get("/progress/:id", (req, res) => {
 
-  const id = req.params.id
 
-  res.json({ time: progress[id] || 0 })
+app.get("/popular",(req,res)=>{
 
-})
+const sorted=[...videos].sort((a,b)=>(views[b.id]||0)-(views[a.id]||0))
 
-/* ---------------- THUMBNAIL ---------------- */
-
-app.post("/thumbnail", (req, res) => {
-
-  const { videoId, image } = req.body
-
-  if (!image) return res.status(400).send("No image")
-
-  const base64 = image.replace(/^data:image\/png;base64,/, "")
-
-  const filePath = path.join(thumbDir, videoId + ".png")
-
-  fs.writeFileSync(filePath, base64, "base64")
-
-  res.json({ status: "saved" })
+res.json(sorted.slice(0,10).map(v=>({
+id:v.id,
+name:v.name,
+views:views[v.id] || 0
+})))
 
 })
 
-app.get("/thumbnail/:id", (req, res) => {
 
-  const id = req.params.id
 
-  const filePath = path.join(thumbDir, id + ".png")
+app.get("/history",(req,res)=>{
+res.json(history.slice(-20).reverse())
+})
 
-  if (fs.existsSync(filePath)) {
 
-    res.sendFile(filePath)
 
-  } else {
+app.post("/progress",(req,res)=>{
 
-    const svg = `
+const {videoId,time}=req.body
+
+progress[videoId]=time
+
+res.json({status:"saved"})
+
+})
+
+
+
+app.get("/progress/:id",(req,res)=>{
+
+const id=req.params.id
+
+res.json({time:progress[id] || 0})
+
+})
+
+
+
+app.get("/thumbnail/:id",(req,res)=>{
+
+const id=parseInt(req.params.id)
+
+const video=videos.find(v=>v.id===id)
+
+if(!video) return res.status(404).send("Not found")
+
+const title=video.name.substring(0,35)
+
+const svg=`
 <svg width="400" height="225" xmlns="http://www.w3.org/2000/svg">
 <rect width="100%" height="100%" fill="#111"/>
 <circle cx="200" cy="112" r="35" fill="#2563eb"/>
 <polygon points="190,95 190,130 225,112" fill="white"/>
+<text x="200" y="200" font-size="16" fill="white" text-anchor="middle">${title}</text>
 </svg>
 `
 
-    res.setHeader("Content-Type", "image/svg+xml")
-    res.send(svg)
-
-  }
+res.setHeader("Content-Type","image/svg+xml")
+res.send(svg)
 
 })
 
-/* ---------------- VIDEO STREAM ---------------- */
 
-app.get("/video/:id", (req, res) => {
 
-  if (!ready) return res.status(503).send("Loading")
+app.get("/video/:id",(req,res)=>{
 
-  const id = parseInt(req.params.id)
+if(!ready) return res.status(503).send("Loading")
 
-  const video = videos.find(v => v.id === id)
+const id=parseInt(req.params.id)
 
-  if (!video) return res.status(404).send("Video not found")
+const video=videos.find(v=>v.id===id)
 
-  views[id] = (views[id] || 0) + 1
+if(!video) return res.status(404).send("Video not found")
 
-  history.push({
-    id: id,
-    name: video.name,
-    time: Date.now()
-  })
+views[id]=(views[id] || 0) + 1
 
-  const file = video.file
-  const mime = getMime(video.name)
+history.push({
+id:id,
+name:video.name,
+time:Date.now()
+})
 
-  const range = req.headers.range
+const file=video.file
 
-  if (!range) {
+const range=req.headers.range
 
-    res.writeHead(200, {
-      "Content-Type": mime,
-      "Content-Length": file.size,
-      "Accept-Ranges": "bytes"
-    })
+if(!range){
 
-    const stream = file.download({ maxConnections: 4 })
+res.setHeader("Content-Type","video/mp4")
 
-    stream.on("error", err => {
-      console.log("Stream error:", err)
-      res.end()
-    })
+file.download().pipe(res)
 
-    stream.pipe(res)
+return
 
-    return
-  }
+}
 
-  const parts = range.replace(/bytes=/, "").split("-")
+const parts=range.replace(/bytes=/,"").split("-")
 
-  let start = Number(parts[0])
-  let end = parts[1] ? Number(parts[1]) : file.size - 1
+const start=parseInt(parts[0],10)
 
-  if (isNaN(start)) start = 0
-  if (isNaN(end) || end >= file.size) end = file.size - 1
+const end=parts[1] ? parseInt(parts[1],10) : file.size-1
 
-  const chunkSize = (end - start) + 1
+const chunkSize=(end-start)+1
 
-  res.writeHead(206, {
-    "Content-Range": `bytes ${start}-${end}/${file.size}`,
-    "Accept-Ranges": "bytes",
-    "Content-Length": chunkSize,
-    "Content-Type": mime,
-    "Cache-Control": "no-cache",
-    "Connection": "keep-alive"
-  })
+res.writeHead(206,{
+"Content-Range":`bytes ${start}-${end}/${file.size}`,
+"Accept-Ranges":"bytes",
+"Content-Length":chunkSize,
+"Content-Type":"video/mp4"
+})
 
-  const stream = file.download({
-    start,
-    end,
-    maxConnections: 4
-  })
+const stream=file.download({start,end})
 
-  stream.on("error", err => {
-    console.log("Stream error:", err)
-    res.end()
-  })
-
-  stream.pipe(res)
+stream.pipe(res)
 
 })
 
-/* ---------------- SERVER ---------------- */
 
-app.listen(PORT, () => {
-  console.log("Server running on", PORT)
+
+app.listen(PORT,()=>{
+console.log("Server running on",PORT)
 })
