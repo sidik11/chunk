@@ -12,7 +12,9 @@ const folderURL = "https://mega.nz/folder/o7ZHQBQT#VezNIK2oyYEW3LxRAjcPfQ"
 const folder = Mega.File.fromURL(folderURL)
 
 let files = []
+let videos = []
 let ready = false
+
 
 function loadFolder(){
 
@@ -23,11 +25,19 @@ console.log("MEGA error:",err)
 return
 }
 
-files = folder.children
+files = folder.children || []
+
+// keep only real video files
+videos = files.filter(f =>
+f &&
+f.name &&
+f.size &&
+/\.(mp4|mkv|webm|mov)$/i.test(f.name)
+)
 
 ready = true
 
-console.log("Loaded",files.length,"files")
+console.log("Loaded",videos.length,"videos")
 
 })
 
@@ -35,19 +45,26 @@ console.log("Loaded",files.length,"files")
 
 loadFolder()
 
+// refresh folder every minute
 setInterval(loadFolder,60000)
+
+
 
 app.get("/list",(req,res)=>{
 
 if(!ready) return res.json([])
 
-res.json(files.map((f,i)=>({
+const list = videos.map((f,i)=>({
 id:i,
 name:f.name,
 size:f.size
-})))
+}))
+
+res.json(list)
 
 })
+
+
 
 app.get("/video/:id",(req,res)=>{
 
@@ -55,9 +72,9 @@ if(!ready) return res.status(503).send("Loading")
 
 const id = parseInt(req.params.id)
 
-if(!files[id]) return res.status(404).send("Video not found")
+const file = videos[id]
 
-const file = files[id]
+if(!file) return res.status(404).send("Video not found")
 
 const range = req.headers.range
 
@@ -91,6 +108,14 @@ const stream = file.download({start,end})
 stream.pipe(res)
 
 })
+
+
+
+app.get("/",(req,res)=>{
+res.send("Mega streaming server running")
+})
+
+
 
 app.listen(PORT,()=>{
 console.log("Server running on",PORT)
