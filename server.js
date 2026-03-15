@@ -1,279 +1,319 @@
-const express = require("express");
-const Mega = require("megajs");
-const cors = require("cors");
+const express = require("express")
+const cors = require("cors")
+const multer = require("multer")
 
-const app = express();
+const {
+S3Client,
+PutObjectCommand,
+GetObjectCommand,
+DeleteObjectCommand,
+CopyObjectCommand,
+ListObjectsV2Command,
+HeadObjectCommand
+} = require("@aws-sdk/client-s3")
 
-// Comprehensive CORS
+const app = express()
+
 app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Range', 'Accept'],
-  exposedHeaders: ['Content-Range', 'Accept-Ranges', 'Content-Length', 'Content-Type']
-}));
+origin:"*",
+methods:["GET","POST","DELETE"],
+allowedHeaders:["Content-Type","Range"]
+}))
 
-app.use(express.json());
+app.use(express.json())
 
-const PORT = process.env.PORT || 3000;
-const folderURL = "https://mega.nz/folder/o7ZHQBQT#VezNIK2oyYEW3LxRAjcPfQ";
+const PORT = process.env.PORT || 3000
 
-let videos = [];
-let ready = false;
+// ===== R2 CONFIG =====
 
-// Analytics (matching frontend expectations)
-let views = {};
-let progress = {};
-let history = [];
+const R2 = new S3Client({
+region:"auto",
+endpoint:process.env.R2_ENDPOINT,
+credentials:{
+accessKeyId:process.env.R2_ACCESS_KEY,
+secretAccessKey:process.env.R2_SECRET_KEY
+}
+})
 
-// Load MEGA folder
-function loadFolder() {
-  console.log("Loading MEGA folder...");
-  
-  try {
-    const folder = Mega.File.fromURL(folderURL);
-    
-    folder.loadAttributes((err) => {
-      if (err) {
-        console.error("MEGA error:", err);
-        ready = false;
-        return;
-      }
+const BUCKET = process.env.BUCKET
 
-      const files = folder.children || [];
-      
-      videos = files
-        .filter(f => f && f.name && f.size && /\.(mp4|mkv|webm|mov)$/i.test(f.name))
-        .map((f, i) => ({
-          id: i,
-          name: f.name,
-          size: f.size,
-          file: f
-        }));
+// ===== FILE UPLOAD HANDLER =====
 
-      ready = true;
-      console.log(`✅ Loaded ${videos.length} videos`);
-      
-      // Initialize view counts
-      videos.forEach(v => {
-        if (!views[v.id]) views[v.id] = 0;
-      });
-    });
-  } catch (error) {
-    console.error("Error:", error);
-    ready = false;
-  }
+const storage = multer.memoryStorage()
+
+const upload = multer({
+storage,
+limits:{
+fileSize: 50 * 1024 * 1024 * 1024
+}
+})
+
+// ===== ROOT =====
+
+app.get("/",(req,res)=>{
+res.send("R2 Streaming Server Running")
+})
+
+// ===== LIST VIDEOS =====
+
+app.get("/list", async (req,res)=>{
+
+try{
+
+const data = await R2.send(new ListObjectsV2Command({
+Bucket:BUCKET
+}))
+
+const videos = (data.Contents || []).map((v,i)=>({
+id:i,
+key:v.Key,
+size:v.Size,
+lastModified:v.LastModified
+}))
+
+res.json(videos)
+
+}catch(err){
+
+console.error(err)
+res.status(500).send("list error")
+
 }
 
-loadFolder();
-setInterval(loadFolder, 60000); // Refresh every minute
+})
 
-// ============= ENDPOINTS MATCHING YOUR FRONTEND =============
+// ===== SEARCH =====
 
-// Server status (root)
-app.get("/", (req, res) => {
-  res.send("Mega streaming server running");
-});
+app.get("/search", async (req,res)=>{
 
-// Video list with views
-app.get("/list", (req, res) => {
-  if (!ready) return res.json([]);
-  
-  res.json(videos.map(v => ({
-    id: v.id,
-    name: v.name,
-    size: v.size,
-    views: views[v.id] || 0
-  })));
-});
+try{
 
-// Search videos
-app.get("/search", (req, res) => {
-  const q = (req.query.q || "").toLowerCase();
-  
-  const results = videos.filter(v =>
-    v.name.toLowerCase().includes(q)
-  );
-  
-  res.json(results.map(v => ({
-    id: v.id,
-    name: v.name,
-    size: v.size
-  })));
-});
+const q = (req.query.q || "").toLowerCase()
 
-// Recent videos (last 10)
-app.get("/recent", (req, res) => {
-  const recent = [...videos].slice(-10).reverse();
-  
-  res.json(recent.map(v => ({
-    id: v.id,
-    name: v.name,
-    size: v.size
-  })));
-});
+const data = await R2.send(new ListObjectsV2Command({
+Bucket:BUCKET
+}))
 
-// Popular videos (most viewed)
-app.get("/popular", (req, res) => {
-  const sorted = [...videos].sort((a, b) =>
-    (views[b.id] || 0) - (views[a.id] || 0)
-  );
-  
-  res.json(sorted.slice(0, 10).map(v => ({
-    id: v.id,
-    name: v.name,
-    size: v.size,
-    views: views[v.id] || 0
-  })));
-});
+const results = (data.Contents || []).filter(v =>
+v.Key.toLowerCase().includes(q)
+)
 
-// Watch history (last 20)
-app.get("/history", (req, res) => {
-  res.json(history.slice(-20).reverse());
-});
+res.json(results)
 
-// Save playback progress
-app.post("/progress", (req, res) => {
-  const { videoId, time } = req.body;
-  
-  if (videoId !== undefined) {
-    progress[videoId] = time || 0;
-    res.json({ status: "saved" });
-  } else {
-    res.status(400).json({ error: "Missing videoId" });
-  }
-});
+}catch(err){
 
-// Get playback progress
-app.get("/progress/:id", (req, res) => {
-  const id = parseInt(req.params.id);
-  res.json({ time: progress[id] || 0 });
-});
+console.error(err)
+res.status(500).send("search error")
 
-// VIDEO STREAMING - CRITICAL FIX
-app.get("/video/:id", (req, res) => {
-  console.log(`🎬 Video request for ID: ${req.params.id}`);
-  
-  if (!ready) {
-    console.log("❌ Server not ready");
-    return res.status(503).send("Loading");
-  }
+}
 
-  const id = parseInt(req.params.id);
-  const video = videos.find(v => v.id === id);
+})
 
-  if (!video) {
-    console.log(`❌ Video ${id} not found`);
-    return res.status(404).send("Video not found");
-  }
+// ===== STORAGE USAGE =====
 
-  console.log(`✅ Found: ${video.name} (${video.size} bytes)`);
+app.get("/storage", async (req,res)=>{
 
-  // Track view
-  views[id] = (views[id] || 0) + 1;
+try{
 
-  // Add to history
-  history.push({
-    id: id,
-    name: video.name,
-    time: Date.now()
-  });
+const data = await R2.send(new ListObjectsV2Command({
+Bucket:BUCKET
+}))
 
-  const file = video.file;
-  const fileSize = video.size;
-  const range = req.headers.range;
+let total = 0
 
-  // Set essential headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
-  res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('Content-Type', 'video/mp4');
-  res.setHeader('Cache-Control', 'no-cache');
+;(data.Contents || []).forEach(v=>{
+total += v.Size
+})
 
-  // Handle OPTIONS preflight
-  if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Range');
-    return res.status(200).end();
-  }
+res.json({
+files:data.KeyCount || 0,
+bytes:total
+})
 
-  // No range header - send full video (200 OK)
-  if (!range) {
-    console.log(`📤 Sending full video: ${video.name}`);
-    res.setHeader('Content-Length', fileSize);
-    res.status(200);
-    
-    try {
-      const stream = file.download();
-      
-      stream.on('error', (err) => {
-        console.error('Stream error:', err);
-        if (!res.headersSent) {
-          res.status(500).send('Stream error');
-        }
-      });
+}catch(err){
 
-      stream.pipe(res);
-    } catch (err) {
-      console.error('Download error:', err);
-      res.status(500).send('Download failed');
-    }
-    return;
-  }
+console.error(err)
+res.status(500).send("storage error")
 
-  // Parse range header (206 Partial Content)
-  const parts = range.replace(/bytes=/, "").split("-");
-  const start = parseInt(parts[0], 10);
-  const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-  const chunkSize = (end - start) + 1;
+}
 
-  console.log(`📤 Range: ${start}-${end}/${fileSize}`);
+})
 
-  // Validate range
-  if (start >= fileSize || end >= fileSize) {
-    console.log(`❌ Invalid range`);
-    res.writeHead(416, {
-      'Content-Range': `bytes */${fileSize}`
-    });
-    return res.end();
-  }
+// ===== UPLOAD VIDEO =====
 
-  // Send partial content
-  res.writeHead(206, {
-    'Content-Range': `bytes ${start}-${end}/${fileSize}`,
-    'Accept-Ranges': 'bytes',
-    'Content-Length': chunkSize,
-    'Content-Type': 'video/mp4',
-  });
+app.post("/upload", upload.single("video"), async (req,res)=>{
 
-  try {
-    const stream = file.download({ start, end });
-    
-    stream.on('error', (err) => {
-      console.error('Stream error:', err);
-      res.end();
-    });
+try{
 
-    stream.pipe(res);
-  } catch (err) {
-    console.error('Download error:', err);
-    res.end();
-  }
-});
+const file = req.file
 
-// Error handling
-app.use((err, req, res, next) => {
-  console.error('Server error:', err);
-  res.status(500).json({ error: 'Internal server error' });
-});
+if(!file){
+return res.status(400).send("No file uploaded")
+}
 
-// 404 handler
-app.use((req, res) => {
-  res.status(404).send('Endpoint not found');
-});
+await R2.send(new PutObjectCommand({
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📁 Folder: ${folderURL}`);
-  console.log(`✅ All endpoints ready: /list, /search, /recent, /popular, /history, /progress, /video/:id`);
-});
+Bucket:BUCKET,
+Key:file.originalname,
+Body:file.buffer,
+ContentType:"video/mp4"
+
+}))
+
+res.json({
+status:"uploaded",
+name:file.originalname
+})
+
+}catch(err){
+
+console.error(err)
+res.status(500).send("upload error")
+
+}
+
+})
+
+// ===== DELETE VIDEO =====
+
+app.delete("/delete/:key", async (req,res)=>{
+
+try{
+
+const key = decodeURIComponent(req.params.key)
+
+await R2.send(new DeleteObjectCommand({
+Bucket:BUCKET,
+Key:key
+}))
+
+res.json({
+status:"deleted",
+key:key
+})
+
+}catch(err){
+
+console.error(err)
+res.status(500).send("delete error")
+
+}
+
+})
+
+// ===== RENAME VIDEO =====
+
+app.post("/rename", async (req,res)=>{
+
+try{
+
+const {oldName,newName} = req.body
+
+if(!oldName || !newName){
+return res.status(400).send("missing name")
+}
+
+await R2.send(new CopyObjectCommand({
+
+Bucket:BUCKET,
+CopySource:`${BUCKET}/${oldName}`,
+Key:newName
+
+}))
+
+await R2.send(new DeleteObjectCommand({
+Bucket:BUCKET,
+Key:oldName
+}))
+
+res.json({
+status:"renamed",
+old:oldName,
+new:newName
+})
+
+}catch(err){
+
+console.error(err)
+res.status(500).send("rename error")
+
+}
+
+})
+
+// ===== VIDEO STREAM =====
+
+app.get("/video/:key", async (req,res)=>{
+
+try{
+
+const key = decodeURIComponent(req.params.key)
+const range = req.headers.range
+
+const meta = await R2.send(new HeadObjectCommand({
+Bucket:BUCKET,
+Key:key
+}))
+
+const fileSize = meta.ContentLength
+
+if(!range){
+
+const data = await R2.send(new GetObjectCommand({
+Bucket:BUCKET,
+Key:key
+}))
+
+res.writeHead(200,{
+"Content-Type":"video/mp4",
+"Content-Length":fileSize,
+"Accept-Ranges":"bytes"
+})
+
+data.Body.pipe(res)
+return
+}
+
+const parts = range.replace(/bytes=/,"").split("-")
+
+const start = parseInt(parts[0],10)
+const end = parts[1] ? parseInt(parts[1],10) : fileSize - 1
+
+if(start >= fileSize){
+res.status(416).send("invalid range")
+return
+}
+
+const chunkSize = (end - start) + 1
+
+const data = await R2.send(new GetObjectCommand({
+
+Bucket:BUCKET,
+Key:key,
+Range:`bytes=${start}-${end}`
+
+}))
+
+res.writeHead(206,{
+"Content-Range":`bytes ${start}-${end}/${fileSize}`,
+"Accept-Ranges":"bytes",
+"Content-Length":chunkSize,
+"Content-Type":"video/mp4"
+})
+
+data.Body.pipe(res)
+
+}catch(err){
+
+console.error(err)
+res.status(500).send("stream error")
+
+}
+
+})
+
+// ===== START SERVER =====
+
+app.listen(PORT,()=>{
+console.log("Server running on port "+PORT)
+})
