@@ -12,6 +12,8 @@ ListObjectsV2Command,
 HeadObjectCommand
 } = require("@aws-sdk/client-s3")
 
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner")
+
 const app = express()
 
 app.use(cors({
@@ -37,7 +39,7 @@ secretAccessKey:process.env.R2_SECRET_KEY
 
 const BUCKET = process.env.BUCKET
 
-// ===== FILE UPLOAD HANDLER =====
+// ===== FILE UPLOAD HANDLER (OLD METHOD) =====
 
 const storage = multer.memoryStorage()
 
@@ -53,6 +55,41 @@ fileSize: 50 * 1024 * 1024 * 1024
 app.get("/",(req,res)=>{
 res.send("R2 Streaming Server Running")
 })
+
+
+// ===== SIGNED UPLOAD URL (NEW METHOD) =====
+
+app.get("/sign-upload", async (req,res)=>{
+
+try{
+
+const fileName=req.query.name
+
+if(!fileName){
+return res.status(400).send("missing filename")
+}
+
+const command=new PutObjectCommand({
+Bucket:BUCKET,
+Key:fileName
+})
+
+const url=await getSignedUrl(R2,command,{expiresIn:300})
+
+res.json({
+uploadURL:url,
+key:fileName
+})
+
+}catch(err){
+
+console.error(err)
+res.status(500).send("sign error")
+
+}
+
+})
+
 
 // ===== LIST VIDEOS =====
 
@@ -82,6 +119,7 @@ res.status(500).send("list error")
 
 })
 
+
 // ===== SEARCH =====
 
 app.get("/search", async (req,res)=>{
@@ -108,6 +146,7 @@ res.status(500).send("search error")
 }
 
 })
+
 
 // ===== STORAGE USAGE =====
 
@@ -139,7 +178,8 @@ res.status(500).send("storage error")
 
 })
 
-// ===== UPLOAD VIDEO =====
+
+// ===== SMALL FILE UPLOAD (OLD METHOD) =====
 
 app.post("/upload", upload.single("video"), async (req,res)=>{
 
@@ -174,6 +214,7 @@ res.status(500).send("upload error")
 
 })
 
+
 // ===== DELETE VIDEO =====
 
 app.delete("/delete/:key", async (req,res)=>{
@@ -200,6 +241,7 @@ res.status(500).send("delete error")
 }
 
 })
+
 
 // ===== RENAME VIDEO =====
 
@@ -240,6 +282,7 @@ res.status(500).send("rename error")
 }
 
 })
+
 
 // ===== VIDEO STREAM =====
 
@@ -311,6 +354,7 @@ res.status(500).send("stream error")
 }
 
 })
+
 
 // ===== START SERVER =====
 
