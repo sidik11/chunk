@@ -389,3 +389,6 @@ app.get("/video/:key", async (req,res)=>{
 app.listen(PORT,()=>{
   console.log("Server running on port "+PORT)
 })
+app.get("/ping",(req,res)=>{
+  res.status(200).send("alive")
+})
