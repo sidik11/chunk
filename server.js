@@ -134,7 +134,7 @@ app.get("/upload-status",(req,res)=>{
   res.json({ uploaded })
 })
 
-// ===== MERGE (FIXED - STREAM BASED) =====
+// ===== MERGE (STREAM SAFE) =====
 app.post("/merge", async (req,res)=>{
   try{
     const { uploadId, fileName, totalChunks, hash } = req.body
@@ -149,10 +149,8 @@ app.post("/merge", async (req,res)=>{
 
       await new Promise((resolve, reject)=>{
         const readStream = fs.createReadStream(chunkPath)
-
         readStream.on("error", reject)
         readStream.on("end", resolve)
-
         readStream.pipe(writeStream, { end:false })
       })
     }
@@ -292,11 +290,10 @@ app.post("/rename", async (req,res)=>{
   }
 })
 
-// ===== STREAM =====
+// ===== STREAM (HYBRID OPTIMIZED) =====
 app.get("/video/:key", async (req,res)=>{
   try{
     const key = decodeURIComponent(req.params.key)
-    const range = req.headers.range
 
     const meta = await R2.send(new HeadObjectCommand({
       Bucket:BUCKET,
@@ -306,46 +303,39 @@ app.get("/video/:key", async (req,res)=>{
     const fileSize = meta.ContentLength
     const contentType = mime.lookup(key) || "application/octet-stream"
 
-    if(!range){
+    const LIMIT = 100 * 1024 * 1024 // 100MB
+
+    // SMALL FILE → stream via server
+    if(fileSize < LIMIT){
       const data = await R2.send(new GetObjectCommand({
         Bucket:BUCKET,
         Key:key
       }))
 
-      res.writeHead(200,{
-        "Content-Type":contentType,
-        "Content-Length":fileSize,
-        "Accept-Ranges":"bytes"
-      })
+      res.setHeader("Content-Type", contentType)
+      res.setHeader("Content-Length", fileSize)
+      res.setHeader("Accept-Ranges", "bytes")
+      res.setHeader("Cache-Control", "public, max-age=31536000")
+      res.setHeader("Connection", "keep-alive")
 
       data.Body.pipe(res)
       return
     }
 
-    const parts = range.replace(/bytes=/,"").split("-")
-    const start = parseInt(parts[0],10)
-    const end = parts[1] ? parseInt(parts[1],10) : fileSize - 1
-
-    if(start >= fileSize){
-      return res.status(416).send("invalid range")
-    }
-
-    const chunkSize = (end - start) + 1
-
-    const data = await R2.send(new GetObjectCommand({
+    // LARGE FILE → redirect to R2
+    const command = new GetObjectCommand({
       Bucket:BUCKET,
-      Key:key,
-      Range:`bytes=${start}-${end}`
-    }))
-
-    res.writeHead(206,{
-      "Content-Range":`bytes ${start}-${end}/${fileSize}`,
-      "Accept-Ranges":"bytes",
-      "Content-Length":chunkSize,
-      "Content-Type":contentType
+      Key:key
     })
 
-    data.Body.pipe(res)
+    const signedUrl = await getSignedUrl(R2, command, {
+      expiresIn: 3600
+    })
+
+    res.setHeader("Cache-Control", "public, max-age=31536000")
+    res.setHeader("Connection", "keep-alive")
+
+    res.redirect(signedUrl)
 
   }catch(err){
     console.error(err)
