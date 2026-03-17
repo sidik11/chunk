@@ -288,30 +288,42 @@ app.delete("/delete/:key", async (req,res)=>{
 // ===== RENAME =====
 app.post("/rename", async (req,res)=>{
   try{
-    const {oldName,newName} = req.body
+    const { oldName, newName } = req.body
+
     if(!oldName || !newName){
-      return res.status(400).send("missing name")
+      return res.status(400).json({ error:"missing name" })
     }
 
-    await R2.send(new CopyObjectCommand({
-      Bucket:BUCKET,
-      CopySource:`${BUCKET}/${oldName}`,
-      Key:newName
+    if(!newName.includes(".")){
+      return res.status(400).json({ error:"invalid filename" })
+    }
+
+    // check file exists
+    await R2.send(new HeadObjectCommand({
+      Bucket: BUCKET,
+      Key: oldName
     }))
 
+    // copy
+    await R2.send(new CopyObjectCommand({
+      Bucket: BUCKET,
+      CopySource: `${BUCKET}/${encodeURIComponent(oldName)}`,
+      Key: newName
+    }))
+
+    // delete old
     await R2.send(new DeleteObjectCommand({
-      Bucket:BUCKET,
-      Key:oldName
+      Bucket: BUCKET,
+      Key: oldName
     }))
 
     res.json({ status:"renamed" })
 
   }catch(err){
     console.error(err)
-    res.status(500).send("rename error")
+    res.status(500).json({ error:"rename failed" })
   }
 })
-
 // ===== STREAM (HYBRID) =====
 app.get("/video/:key", async (req,res)=>{
   try{
