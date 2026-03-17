@@ -31,7 +31,6 @@ app.use(express.json())
 const PORT = process.env.PORT || 3000
 
 // ===== R2 CONFIG =====
-
 const R2 = new S3Client({
   region: "auto",
   endpoint: process.env.R2_ENDPOINT,
@@ -96,6 +95,29 @@ app.get("/sign-upload", async (req,res)=>{
   }catch(err){
     console.error(err)
     res.status(500).send("sign error")
+  }
+})
+
+// ✅ NEW: SIGNED VIDEO STREAM URL (CORRECT FIX)
+app.get("/get-video-url", async (req,res)=>{
+  try{
+    const key = req.query.key
+    if(!key) return res.status(400).send("missing key")
+
+    const command = new GetObjectCommand({
+      Bucket: BUCKET,
+      Key: key
+    })
+
+    const url = await getSignedUrl(R2, command, {
+      expiresIn: 3600
+    })
+
+    res.json({ url })
+
+  }catch(err){
+    console.error(err)
+    res.status(500).send("signed url error")
   }
 })
 
@@ -290,7 +312,7 @@ app.post("/rename", async (req,res)=>{
   }
 })
 
-// ===== STREAM (HYBRID OPTIMIZED) =====
+// ===== STREAM (HYBRID) =====
 app.get("/video/:key", async (req,res)=>{
   try{
     const key = decodeURIComponent(req.params.key)
@@ -303,9 +325,8 @@ app.get("/video/:key", async (req,res)=>{
     const fileSize = meta.ContentLength
     const contentType = mime.lookup(key) || "application/octet-stream"
 
-    const LIMIT = 100 * 1024 * 1024 // 100MB
+    const LIMIT = 100 * 1024 * 1024
 
-    // SMALL FILE → stream via server
     if(fileSize < LIMIT){
       const data = await R2.send(new GetObjectCommand({
         Bucket:BUCKET,
@@ -322,7 +343,6 @@ app.get("/video/:key", async (req,res)=>{
       return
     }
 
-    // LARGE FILE → redirect to R2
     const command = new GetObjectCommand({
       Bucket:BUCKET,
       Key:key
