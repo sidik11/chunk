@@ -294,30 +294,43 @@ app.post("/rename", async (req,res)=>{
       return res.status(400).json({ error:"missing name" })
     }
 
-    if(!newName.includes(".")){
-      return res.status(400).json({ error:"invalid filename" })
-    }
+    const oldThumb = oldName.replace(/\.[^/.]+$/, ".jpg")
+    const newThumb = newName.replace(/\.[^/.]+$/, ".jpg")
 
-    // check file exists
-    await R2.send(new HeadObjectCommand({
-      Bucket: BUCKET,
-      Key: oldName
-    }))
-
-    // copy
+    // ---- RENAME VIDEO ----
     await R2.send(new CopyObjectCommand({
       Bucket: BUCKET,
       CopySource: `${BUCKET}/${encodeURIComponent(oldName)}`,
       Key: newName
     }))
 
-    // delete old
     await R2.send(new DeleteObjectCommand({
       Bucket: BUCKET,
       Key: oldName
     }))
 
-    res.json({ status:"renamed" })
+    // ---- RENAME THUMB (if exists) ----
+    try {
+      await R2.send(new HeadObjectCommand({
+        Bucket: BUCKET,
+        Key: oldThumb
+      }))
+
+      await R2.send(new CopyObjectCommand({
+        Bucket: BUCKET,
+        CopySource: `${BUCKET}/${encodeURIComponent(oldThumb)}`,
+        Key: newThumb
+      }))
+
+      await R2.send(new DeleteObjectCommand({
+        Bucket: BUCKET,
+        Key: oldThumb
+      }))
+    } catch {
+      // thumbnail doesn't exist → ignore
+    }
+
+    res.json({ status:"renamed with thumbnail" })
 
   }catch(err){
     console.error(err)
