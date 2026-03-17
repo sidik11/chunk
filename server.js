@@ -57,7 +57,7 @@ function saveHashDB(){
   fs.writeFileSync(HASH_FILE, JSON.stringify(hashDB))
 }
 
-// ===== MULTER (SMALL FILE FALLBACK) =====
+// ===== MULTER =====
 const storage = multer.memoryStorage()
 const upload = multer({
   storage,
@@ -69,10 +69,7 @@ app.get("/", (req,res)=>{
   res.send("Advanced R2 Streaming Server Running 🚀")
 })
 
-
-// =====================================================
-// 🔐 DUPLICATE CHECK
-// =====================================================
+// ===== DUPLICATE CHECK =====
 app.post("/check-file",(req,res)=>{
   const { hash } = req.body
   if(hashDB[hash]){
@@ -81,10 +78,7 @@ app.post("/check-file",(req,res)=>{
   res.json({ exists:false })
 })
 
-
-// =====================================================
-// 🔗 SIGNED UPLOAD (KEEP YOUR OLD SYSTEM WORKING)
-// =====================================================
+// ===== SIGNED UPLOAD =====
 app.get("/sign-upload", async (req,res)=>{
   try{
     const fileName=req.query.name
@@ -105,12 +99,8 @@ app.get("/sign-upload", async (req,res)=>{
   }
 })
 
-
-// =====================================================
-// 📦 CHUNK UPLOAD
-// =====================================================
+// ===== CHUNK UPLOAD =====
 app.post("/upload-chunk", async (req,res)=>{
-
   const uploadId = req.headers.uploadid
   const chunkIndex = req.headers.chunkindex
 
@@ -129,10 +119,7 @@ app.post("/upload-chunk", async (req,res)=>{
   })
 })
 
-
-// =====================================================
-// 🔄 RESUME CHECK
-// =====================================================
+// ===== RESUME CHECK =====
 app.get("/upload-status",(req,res)=>{
   const uploadId = req.query.uploadId
   const dir = path.join(TEMP_DIR, uploadId)
@@ -147,10 +134,7 @@ app.get("/upload-status",(req,res)=>{
   res.json({ uploaded })
 })
 
-
-// =====================================================
-// 🧩 MERGE + UPLOAD TO R2
-// =====================================================
+// ===== MERGE (FIXED - STREAM BASED) =====
 app.post("/merge", async (req,res)=>{
   try{
     const { uploadId, fileName, totalChunks, hash } = req.body
@@ -162,30 +146,35 @@ app.post("/merge", async (req,res)=>{
 
     for(let i=0;i<totalChunks;i++){
       const chunkPath = path.join(dir,"chunk_"+i)
-      const data = fs.readFileSync(chunkPath)
-      writeStream.write(data)
+
+      await new Promise((resolve, reject)=>{
+        const readStream = fs.createReadStream(chunkPath)
+
+        readStream.on("error", reject)
+        readStream.on("end", resolve)
+
+        readStream.pipe(writeStream, { end:false })
+      })
     }
 
     writeStream.end()
 
     writeStream.on("finish", async ()=>{
 
-      const fileBuffer = fs.readFileSync(finalPath)
+      const fileStream = fs.createReadStream(finalPath)
 
       await R2.send(new PutObjectCommand({
         Bucket:BUCKET,
         Key:fileName,
-        Body:fileBuffer,
+        Body:fileStream,
         ContentType: mime.lookup(fileName) || "application/octet-stream"
       }))
 
-      // save hash
       if(hash){
         hashDB[hash] = fileName
         saveHashDB()
       }
 
-      // cleanup
       fs.removeSync(dir)
       fs.removeSync(finalPath)
 
@@ -198,10 +187,7 @@ app.post("/merge", async (req,res)=>{
   }
 })
 
-
-// =====================================================
-// 📤 SMALL FILE UPLOAD (KEEP BACKWARD COMPATIBILITY)
-// =====================================================
+// ===== SMALL UPLOAD =====
 app.post("/upload", upload.single("video"), async (req,res)=>{
   try{
     const file = req.file
@@ -222,10 +208,7 @@ app.post("/upload", upload.single("video"), async (req,res)=>{
   }
 })
 
-
-// =====================================================
-// 📃 LIST
-// =====================================================
+// ===== LIST =====
 app.get("/list", async (req,res)=>{
   try{
     const data = await R2.send(new ListObjectsV2Command({ Bucket:BUCKET }))
@@ -245,10 +228,7 @@ app.get("/list", async (req,res)=>{
   }
 })
 
-
-// =====================================================
-// 💾 STORAGE
-// =====================================================
+// ===== STORAGE =====
 app.get("/storage", async (req,res)=>{
   try{
     const data = await R2.send(new ListObjectsV2Command({ Bucket:BUCKET }))
@@ -267,10 +247,7 @@ app.get("/storage", async (req,res)=>{
   }
 })
 
-
-// =====================================================
-// ❌ DELETE
-// =====================================================
+// ===== DELETE =====
 app.delete("/delete/:key", async (req,res)=>{
   try{
     const key = decodeURIComponent(req.params.key)
@@ -288,10 +265,7 @@ app.delete("/delete/:key", async (req,res)=>{
   }
 })
 
-
-// =====================================================
-// ✏️ RENAME
-// =====================================================
+// ===== RENAME =====
 app.post("/rename", async (req,res)=>{
   try{
     const {oldName,newName} = req.body
@@ -318,14 +292,9 @@ app.post("/rename", async (req,res)=>{
   }
 })
 
-
-// =====================================================
-// 🎬 STREAM (FIXED FOR ALL VIDEO TYPES)
-// =====================================================
+// ===== STREAM =====
 app.get("/video/:key", async (req,res)=>{
-
   try{
-
     const key = decodeURIComponent(req.params.key)
     const range = req.headers.range
 
@@ -384,11 +353,11 @@ app.get("/video/:key", async (req,res)=>{
   }
 })
 
-
 // ===== START =====
 app.listen(PORT,()=>{
   console.log("Server running on port "+PORT)
 })
+
 app.get("/ping",(req,res)=>{
   res.status(200).send("alive")
 })
